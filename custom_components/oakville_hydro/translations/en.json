@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Oakville Hydro",
+        "description": "Sign in with the email and password of your MyOakvilleHydro account. Hourly electricity usage and its cost are stored as statistics for the Energy dashboard.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to Oakville Hydro again",
+        "description": "The portal rejected the stored password for {username}.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The portal rejected this email and password.",
+      "mfa_required": "This account asks for a one-time code, which the integration cannot send.",
+      "cannot_connect": "The portal could not be reached.",
+      "no_service": "The account has no electricity meter.",
+      "unknown": "The portal returned an unexpected answer."
+    },
+    "abort": {
+      "already_configured": "This meter is already set up.",
+      "single_instance_allowed": "Oakville Hydro is already set up.",
+      "reauth_successful": "The new password was stored."
+    }
+  }
+}

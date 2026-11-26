@@ -1,0 +1,18 @@
+{
+  "domain": "oakville_hydro",
+  "name": "Oakville Hydro",
+  "codeowners": [
+    "@Zeromika"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "recorder"
+  ],
+  "documentation": "https://github.com/Zeromika/ha-oakville-hydro",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/Zeromika/ha-oakville-hydro/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
