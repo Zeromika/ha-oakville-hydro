@@ -29,5 +29,26 @@
       "single_instance_allowed": "Oakville Hydro is already set up.",
       "reauth_successful": "The new password was stored."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Oakville Hydro options",
+        "data": {
+          "water_distribution": "Water used between two meter readings"
+        },
+        "data_description": {
+          "water_distribution": "The water meter is read about once every two months. Changing this writes the stored water statistics again for every billing period the portal still lists."
+        }
+      }
+    }
+  },
+  "selector": {
+    "water_distribution": {
+      "options": {
+        "spread": "Spread evenly over the days between the readings",
+        "reading_date": "All on the date of the meter reading"
+      }
+    }
   }
 }

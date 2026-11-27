@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from enum import StrEnum
 from typing import Any
 
 _MONTHS = {
@@ -14,6 +15,13 @@ _MONTHS = {
         start=1,
     )
 }
+
+
+class WaterDistribution(StrEnum):
+    """Where a water billing period's volume is placed in time."""
+
+    SPREAD = "spread"
+    READING_DATE = "reading_date"
 
 
 @dataclass(frozen=True)
@@ -105,23 +113,35 @@ def parse_water_usage(
     return periods
 
 
-def spread_hourly(period: BillingPeriod, local_zone: tzinfo) -> list[HourlyRead]:
-    """Share a period's volume and cost equally among its hours.
+def period_hours(
+    period: BillingPeriod, local_zone: tzinfo, distribution: WaterDistribution
+) -> list[HourlyRead]:
+    """Place a period's volume and cost on its hours.
 
     The meter is read once per period, so the real use per hour is unknown.
-    The period runs from local midnight of its start date to local midnight
-    of its end date.
+    The period's hours are those of the local days after its start date up to
+    and including its end date, the day of the reading. SPREAD shares the
+    volume equally among them. READING_DATE puts all of it in the first hour
+    of the end date and zero in the others. Both give the same hours and the
+    same total, so one can replace the other in place.
     """
-    first = _local_midnight(period.start, local_zone)
-    last = _local_midnight(period.end, local_zone)
+    first = _local_midnight(period.start + timedelta(days=1), local_zone)
+    last = _local_midnight(period.end + timedelta(days=1), local_zone)
     hours = int((last - first) / timedelta(hours=1))
     if hours <= 0:
         return []
+    starts = [first + timedelta(hours=index) for index in range(hours)]
+    if distribution is WaterDistribution.SPREAD:
+        return [
+            HourlyRead(start, period.volume / hours, period.cost / hours)
+            for start in starts
+        ]
+    reading = _local_midnight(period.end, local_zone)
     return [
-        HourlyRead(
-            first + timedelta(hours=index), period.volume / hours, period.cost / hours
-        )
-        for index in range(hours)
+        HourlyRead(start, period.volume, period.cost)
+        if start == reading
+        else HourlyRead(start, 0.0, 0.0)
+        for start in starts
     ]
 
 

@@ -130,8 +130,9 @@ def test_account_without_water_data_gives_no_periods():
 
 
 def test_period_is_spread_over_every_hour_including_the_fall_back_hour():
-    period = model.BillingPeriod(date(2026, 10, 31), date(2026, 11, 2), 4.9, 9.8)
-    reads = model.spread_hourly(period, TORONTO)
+    period = model.BillingPeriod(date(2026, 10, 30), date(2026, 11, 1), 4.9, 9.8)
+    reads = model.period_hours(period, TORONTO, model.WaterDistribution.SPREAD)
+    # 31 October has 24 hours and 1 November, when the clocks go back, has 25.
     assert len(reads) == 49
     assert reads[0].start == datetime(2026, 10, 31, 4, tzinfo=UTC)
     assert reads[-1].start == datetime(2026, 11, 2, 4, tzinfo=UTC)
@@ -140,10 +141,31 @@ def test_period_is_spread_over_every_hour_including_the_fall_back_hour():
     assert sum(read.cost for read in reads) == pytest.approx(9.8)
 
 
-def test_consecutive_periods_share_no_hour():
+def test_reading_date_puts_the_whole_period_in_the_first_hour_of_that_date():
+    period = model.BillingPeriod(date(2025, 3, 10), date(2025, 5, 12), 9.0, 30.25)
+    reads = model.period_hours(period, TORONTO, model.WaterDistribution.READING_DATE)
+    used = [read for read in reads if read.amount or read.cost]
+    assert used == [
+        model.HourlyRead(datetime(2025, 5, 12, 4, tzinfo=UTC), 9.0, 30.25)
+    ]
+
+
+def test_both_distributions_cover_the_same_hours_and_end_on_the_same_sums():
+    period = model.BillingPeriod(date(2025, 3, 10), date(2025, 5, 12), 9.0, 30.25)
+    spread = model.period_hours(period, TORONTO, model.WaterDistribution.SPREAD)
+    lump = model.period_hours(period, TORONTO, model.WaterDistribution.READING_DATE)
+    assert [read.start for read in spread] == [read.start for read in lump]
+    spread_rows, spread_cost = model.statistics_rows(spread, 50.0, 5.0)
+    lump_rows, lump_cost = model.statistics_rows(lump, 50.0, 5.0)
+    assert spread_rows[-1]["sum"] == pytest.approx(lump_rows[-1]["sum"])
+    assert spread_cost[-1]["sum"] == pytest.approx(lump_cost[-1]["sum"])
+
+
+@pytest.mark.parametrize("distribution", list(model.WaterDistribution))
+def test_consecutive_periods_share_no_hour(distribution):
     first, second = model.parse_water_usage(WATER_USAGE, WATER_CHART)
-    earlier = model.spread_hourly(first, TORONTO)
-    later = model.spread_hourly(second, TORONTO)
+    earlier = model.period_hours(first, TORONTO, distribution)
+    later = model.period_hours(second, TORONTO, distribution)
     assert later[0].start - earlier[-1].start == timedelta(hours=1)
 
 

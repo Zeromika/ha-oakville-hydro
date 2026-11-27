@@ -7,9 +7,20 @@ from typing import Any
 
 import probatio
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .api import (
     CannotConnect,
@@ -24,8 +35,10 @@ from .const import (
     CONF_METER,
     CONF_SERVICE_ID,
     CONF_SERVICE_START,
+    CONF_WATER_DISTRIBUTION,
     DOMAIN,
 )
+from .model import WaterDistribution
 
 USER_SCHEMA = probatio.Schema(
     {
@@ -38,10 +51,52 @@ REAUTH_SCHEMA = probatio.Schema(
 )
 
 
+OPTIONS_SCHEMA = probatio.Schema(
+    {
+        probatio.Required(
+            CONF_WATER_DISTRIBUTION, default=WaterDistribution.SPREAD.value
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[distribution.value for distribution in WaterDistribution],
+                mode=SelectSelectorMode.LIST,
+                translation_key=CONF_WATER_DISTRIBUTION,
+            )
+        )
+    }
+)
+
+
+class OakvilleHydroOptionsFlow(OptionsFlowWithReload):
+    """Choose how water between two meter readings is placed in time.
+
+    The entry reloads when the choice changes, and the next import writes the
+    water statistics again in the chosen form.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options, or store the ones submitted."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                OPTIONS_SCHEMA, self.config_entry.options
+            ),
+        )
+
+
 class OakvilleHydroConfigFlow(ConfigFlow, domain=DOMAIN):
     """Ask for the portal's email and password and pick the electricity meter."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OakvilleHydroOptionsFlow:
+        """Return the flow behind the entry's Configure button."""
+        return OakvilleHydroOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

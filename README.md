@@ -17,9 +17,16 @@ This project is not affiliated with Oakville Hydro. It uses the same web API as 
 - On first setup it imports all history the portal has.
 - After that it checks every 6 hours. It reads the last 7 days of electricity again, so readings the utility corrects later replace the stored ones, and it adds a water billing period when the portal shows a new one.
 
-### Water is an estimate per hour
+### Water between two meter readings
 
-The water meter is read about once every two months, and the portal has one volume per billing period. The integration shares that volume, and its cost, equally among the hours from the start date to the end date of the period. Totals per period are exact. Values per hour, day or month are averages, and the time since the last reading stays empty until the next reading arrives.
+The water meter is read about once every two months, and the portal has one volume per billing period. Totals per period are exact; when the water was used inside the period is not known. The time since the last reading stays empty until the next reading arrives.
+
+The integration's **Configure** button (Settings → Devices & services → Oakville Hydro) has one setting for this:
+
+- **Spread evenly over the days between the readings** (default). The volume and its cost are shared equally among the hours of the days after the previous reading up to and including the day of the reading. Values per day or month are averages.
+- **All on the date of the meter reading.** The whole volume and cost appear on the day the meter was read, and the days before it show zero.
+
+Changing the setting writes the stored water statistics again for every billing period the portal still lists. Older periods keep the form they were stored in.
 
 It creates no entities. The data appears only as statistics.
 

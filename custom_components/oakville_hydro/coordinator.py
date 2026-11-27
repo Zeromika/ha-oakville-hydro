@@ -37,13 +37,21 @@ from .const import (
     CONF_METER,
     CONF_SERVICE_ID,
     CONF_SERVICE_START,
+    CONF_WATER_DISTRIBUTION,
+    CONF_WATER_STORED_AS,
     CONSUMPTION_STATISTIC_ID,
     COST_STATISTIC_ID,
     DOMAIN,
     WATER_CONSUMPTION_STATISTIC_ID,
     WATER_COST_STATISTIC_ID,
 )
-from .model import HourlyRead, spread_hourly, statistics_rows, with_stored_hours
+from .model import (
+    HourlyRead,
+    WaterDistribution,
+    period_hours,
+    statistics_rows,
+    with_stored_hours,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -191,20 +199,32 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
         last = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics, self.hass, 1, WATER.consumption_id, True, set()
         )
+        entry = self.config_entry
+        distribution = WaterDistribution(
+            entry.options.get(CONF_WATER_DISTRIBUTION, WaterDistribution.SPREAD)
+        )
+        stored_as = entry.data.get(CONF_WATER_STORED_AS)
+        # After the setting changes, every period the portal lists is written
+        # again in the new form. Otherwise only hours not yet stored are added.
+        rewrite = bool(last) and stored_as != distribution
         stored_until = (
             dt_util.utc_from_timestamp(last[WATER.consumption_id][0]["start"])
-            if last
+            if last and not rewrite
             else None
         )
         local_zone = dt_util.get_default_time_zone()
         by_start = {
             read.start: read
             for period in periods
-            for read in spread_hourly(period, local_zone)
+            for read in period_hours(period, local_zone, distribution)
             if stored_until is None or read.start > stored_until
         }
         if by_start:
             await self._async_store([by_start[start] for start in sorted(by_start)], WATER)
+        if stored_as != distribution and (by_start or not last):
+            self.hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_WATER_STORED_AS: distribution.value}
+            )
 
     async def _async_store(self, reads: list[HourlyRead], meter: _Meter) -> None:
         """Write the reads, continuing the running sums stored before the first."""
