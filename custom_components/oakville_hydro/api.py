@@ -9,7 +9,7 @@ from typing import Any
 
 import aiohttp
 
-from .model import HourlyRead, parse_usage
+from .model import BillingPeriod, HourlyRead, parse_usage, parse_water_usage
 
 IAM_URL = "https://iamapi-dot-oakvillehydro-myaccount-prod.appspot.com/iamapi"
 ACCOUNT_URL = (
@@ -102,10 +102,8 @@ class OakvilleHydroClient:
         )
         services: list[ElectricityService] = []
         for account in accounts or []:
-            billing = await self._get(
-                f"{ACCOUNT_URL}/dashboard/me/billing", {"billingId": account["id"]}
-            )
-            for service in (billing or {}).get("electricityServices") or []:
+            billing = await self._async_billing(str(account["id"]))
+            for service in billing.get("electricityServices") or []:
                 if not service.get("meter"):
                     continue
                 eff = service.get("effDate")
@@ -142,6 +140,47 @@ class OakvilleHydroClient:
             return parse_usage(rows or [])
         except (KeyError, TypeError, ValueError) as err:
             raise OakvilleHydroError(f"unexpected usage row: {err}") from err
+
+    async def async_get_water_service_id(self, account_id: str) -> str | None:
+        """Return the billing account's water service, or None when it has none."""
+        billing = await self._async_billing(account_id)
+        for service in billing.get("waterServices") or []:
+            if isinstance(service, dict) and service.get("id"):
+                return str(service["id"])
+        return None
+
+    async def async_get_water_periods(
+        self, account_id: str, service_id: str
+    ) -> list[BillingPeriod]:
+        """Read the water billing periods the portal shows for the service.
+
+        The portal returns its whole list whatever dates are asked for.
+        """
+        now_ms = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+        params = {
+            "accountId": account_id,
+            "view": "billing",
+            "startDate": "0",
+            "endDate": now_ms,
+        }
+        usage = await self._get(
+            f"{ACCOUNT_URL}/services/{service_id}/waterUsage", params
+        )
+        chart = await self._get(
+            f"{ACCOUNT_URL}/services/{service_id}/billingChartData", params
+        )
+        try:
+            return parse_water_usage(usage or {}, chart)
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            raise OakvilleHydroError(f"unexpected water usage: {err}") from err
+
+    async def _async_billing(self, account_id: str) -> dict[str, Any]:
+        billing = await self._get(
+            f"{ACCOUNT_URL}/dashboard/me/billing", {"billingId": account_id}
+        )
+        if not isinstance(billing, dict):
+            raise OakvilleHydroError("billing answer is not a JSON object")
+        return billing
 
     async def _get(self, url: str, params: dict[str, str] | None = None) -> Any:
         if self._token is None:

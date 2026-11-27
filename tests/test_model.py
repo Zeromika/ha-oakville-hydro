@@ -1,9 +1,11 @@
 """Tests for the hourly-read model. They need pytest and nothing from Home Assistant."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import importlib.util
+from itertools import pairwise
 from pathlib import Path
 import sys
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -14,6 +16,15 @@ sys.modules[_SPEC.name] = model
 _SPEC.loader.exec_module(model)
 
 UTC = timezone.utc
+TORONTO = ZoneInfo("America/Toronto")
+
+WATER_USAGE = {
+    "categories": ["Mar 10, 2025", "May 12, 2025"],
+    "series": [{"data": [6, 9], "cost": [20.5, 30.25], "unit": "CM"}],
+}
+WATER_CHART = {
+    "dataPeriods": ["Jan 08, 2025 - Mar 10, 2025", "Mar 10, 2025 - May 12, 2025"]
+}
 
 
 def _row(start: str, value, cost=0.1):
@@ -28,7 +39,7 @@ def test_fall_back_day_keeps_both_one_oclock_hours():
         _row("2026-11-01T02:00:00-05:00", 4.0),
     ]
     reads = model.parse_usage(rows)
-    assert [read.kwh for read in reads] == [1.0, 2.0, 3.0, 4.0]
+    assert [read.amount for read in reads] == [1.0, 2.0, 3.0, 4.0]
     assert [read.start for read in reads] == [
         datetime(2026, 11, 1, 4, tzinfo=UTC) + timedelta(hours=i) for i in range(4)
     ]
@@ -50,7 +61,7 @@ def test_rows_inside_one_hour_are_added_together():
     ]
     (read,) = model.parse_usage(rows)
     assert read.start == datetime(2026, 11, 25, 15, tzinfo=UTC)
-    assert read.kwh == pytest.approx(0.75)
+    assert read.amount == pytest.approx(0.75)
     assert read.cost == pytest.approx(0.06)
 
 
@@ -91,3 +102,65 @@ def test_stored_hour_missing_from_a_reread_keeps_its_value():
     # Reading the same answer again changes nothing.
     again, _ = model.statistics_rows(model.with_stored_hours(reads, merged), 100.0, 10.0)
     assert again == consumption
+
+
+def test_water_periods_take_their_start_from_the_chart():
+    periods = model.parse_water_usage(WATER_USAGE, WATER_CHART)
+    assert periods == [
+        model.BillingPeriod(date(2025, 1, 8), date(2025, 3, 10), 6.0, 20.5),
+        model.BillingPeriod(date(2025, 3, 10), date(2025, 5, 12), 9.0, 30.25),
+    ]
+
+
+def test_water_period_without_chart_starts_at_the_previous_reading():
+    periods = model.parse_water_usage(WATER_USAGE, None)
+    assert periods == [
+        model.BillingPeriod(date(2025, 3, 10), date(2025, 5, 12), 9.0, 30.25)
+    ]
+
+
+def test_water_in_another_unit_is_rejected():
+    usage = {"categories": ["Mar 10, 2025"], "series": [{"data": [6], "unit": "L"}]}
+    with pytest.raises(ValueError):
+        model.parse_water_usage(usage, WATER_CHART)
+
+
+def test_account_without_water_data_gives_no_periods():
+    assert model.parse_water_usage({"categories": [], "series": []}, None) == []
+
+
+def test_period_is_spread_over_every_hour_including_the_fall_back_hour():
+    period = model.BillingPeriod(date(2026, 10, 31), date(2026, 11, 2), 4.9, 9.8)
+    reads = model.spread_hourly(period, TORONTO)
+    assert len(reads) == 49
+    assert reads[0].start == datetime(2026, 10, 31, 4, tzinfo=UTC)
+    assert reads[-1].start == datetime(2026, 11, 2, 4, tzinfo=UTC)
+    assert all(b.start - a.start == timedelta(hours=1) for a, b in pairwise(reads))
+    assert sum(read.amount for read in reads) == pytest.approx(4.9)
+    assert sum(read.cost for read in reads) == pytest.approx(9.8)
+
+
+def test_consecutive_periods_share_no_hour():
+    first, second = model.parse_water_usage(WATER_USAGE, WATER_CHART)
+    earlier = model.spread_hourly(first, TORONTO)
+    later = model.spread_hourly(second, TORONTO)
+    assert later[0].start - earlier[-1].start == timedelta(hours=1)
+
+
+def test_unreadable_chart_entry_falls_back_to_the_previous_reading():
+    chart = {"dataPeriods": ["Jan 08, 2025 - Mar 10, 2025", "", None]}
+    periods = model.parse_water_usage(WATER_USAGE, chart)
+    assert [(period.start, period.end) for period in periods] == [
+        (date(2025, 1, 8), date(2025, 3, 10)),
+        (date(2025, 3, 10), date(2025, 5, 12)),
+    ]
+
+
+def test_newest_first_readings_are_put_in_date_order():
+    usage = {
+        "categories": ["May 12, 2025", "Mar 10, 2025"],
+        "series": [{"data": [9, 6], "cost": [30.25, 20.5], "unit": "CM"}],
+    }
+    assert model.parse_water_usage(usage, WATER_CHART) == model.parse_water_usage(
+        WATER_USAGE, WATER_CHART
+    )

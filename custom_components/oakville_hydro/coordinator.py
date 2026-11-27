@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
 from typing import Any
@@ -17,13 +18,18 @@ from homeassistant.components.recorder.statistics import (
     statistics_during_period,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfEnergy
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    UnitOfEnergy,
+    UnitOfVolume,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import EnergyConverter
+from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
 
 from .api import InvalidAuth, MfaRequired, OakvilleHydroClient, OakvilleHydroError
 from .const import (
@@ -34,8 +40,10 @@ from .const import (
     CONSUMPTION_STATISTIC_ID,
     COST_STATISTIC_ID,
     DOMAIN,
+    WATER_CONSUMPTION_STATISTIC_ID,
+    WATER_COST_STATISTIC_ID,
 )
-from .model import HourlyRead, statistics_rows, with_stored_hours
+from .model import HourlyRead, spread_hourly, statistics_rows, with_stored_hours
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +60,36 @@ DEFAULT_BACKFILL_DAYS = 400
 RETRY_SECONDS = 600
 
 type OakvilleHydroConfigEntry = ConfigEntry[OakvilleHydroCoordinator]
+
+
+@dataclass(frozen=True)
+class _Meter:
+    """The pair of statistics kept for one kind of meter."""
+
+    consumption_id: str
+    cost_id: str
+    name: str
+    cost_name: str
+    unit: str
+    unit_class: str
+
+
+ELECTRICITY = _Meter(
+    CONSUMPTION_STATISTIC_ID,
+    COST_STATISTIC_ID,
+    "Oakville Hydro electricity",
+    "Oakville Hydro electricity cost (commodity)",
+    UnitOfEnergy.KILO_WATT_HOUR,
+    EnergyConverter.UNIT_CLASS,
+)
+WATER = _Meter(
+    WATER_CONSUMPTION_STATISTIC_ID,
+    WATER_COST_STATISTIC_ID,
+    "Oakville Hydro water",
+    "Oakville Hydro water cost (consumption charge)",
+    UnitOfVolume.CUBIC_METERS,
+    VolumeConverter.UNIT_CLASS,
+)
 
 
 class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
@@ -73,6 +111,7 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
             config_entry.data[CONF_USERNAME],
             config_entry.data[CONF_PASSWORD],
         )
+        self._water_service_id: str | None = None
 
         @callback
         def _keep_polling() -> None:
@@ -91,11 +130,18 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
         except OakvilleHydroError as err:
             raise UpdateFailed(str(err), retry_after=RETRY_SECONDS) from err
         try:
-            return await self._async_import()
+            newest = await self._async_import()
         except OakvilleHydroError as err:
             # A rejected token here is not a rejected password: the sign-in above
             # succeeded. Try again later instead of asking for the password.
             raise UpdateFailed(str(err), retry_after=RETRY_SECONDS) from err
+        try:
+            await self._async_import_water()
+        except OakvilleHydroError as err:
+            # Water is read once every two months. A failure here must not make
+            # the electricity import run again every few minutes.
+            _LOGGER.warning("Water usage was not updated: %s", err)
+        return newest
 
     async def _async_import(self) -> datetime | None:
         recorder = get_instance(self.hass)
@@ -127,18 +173,53 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
         reads = with_stored_hours(
             reads, await self._async_stored_hours(reads[0].start, reads[-1].start)
         )
-        kwh_base, cost_base = await self._async_sums_before(reads[0].start)
-        consumption, cost = statistics_rows(reads, kwh_base, cost_base)
+        await self._async_store(reads, ELECTRICITY)
+        return reads[-1].start
+
+    async def _async_import_water(self) -> None:
+        account_id = self.config_entry.data[CONF_ACCOUNT_ID]
+        if self._water_service_id is None:
+            # An empty string records that the account has no water service.
+            self._water_service_id = (
+                await self.client.async_get_water_service_id(account_id) or ""
+            )
+        if not self._water_service_id:
+            return
+        periods = await self.client.async_get_water_periods(
+            account_id, self._water_service_id
+        )
+        last = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, WATER.consumption_id, True, set()
+        )
+        stored_until = (
+            dt_util.utc_from_timestamp(last[WATER.consumption_id][0]["start"])
+            if last
+            else None
+        )
+        local_zone = dt_util.get_default_time_zone()
+        by_start = {
+            read.start: read
+            for period in periods
+            for read in spread_hourly(period, local_zone)
+            if stored_until is None or read.start > stored_until
+        }
+        if by_start:
+            await self._async_store([by_start[start] for start in sorted(by_start)], WATER)
+
+    async def _async_store(self, reads: list[HourlyRead], meter: _Meter) -> None:
+        """Write the reads, continuing the running sums stored before the first."""
+        amount_base, cost_base = await self._async_sums_before(reads[0].start, meter)
+        consumption, cost = statistics_rows(reads, amount_base, cost_base)
         async_add_external_statistics(
             self.hass,
             StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_sum=True,
-                name="Oakville Hydro electricity",
+                name=meter.name,
                 source=DOMAIN,
-                statistic_id=CONSUMPTION_STATISTIC_ID,
-                unit_class=EnergyConverter.UNIT_CLASS,
-                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                statistic_id=meter.consumption_id,
+                unit_class=meter.unit_class,
+                unit_of_measurement=meter.unit,
             ),
             consumption,
         )
@@ -147,21 +228,21 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
             StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_sum=True,
-                name="Oakville Hydro electricity cost (commodity)",
+                name=meter.cost_name,
                 source=DOMAIN,
-                statistic_id=COST_STATISTIC_ID,
+                statistic_id=meter.cost_id,
                 unit_class=None,
                 unit_of_measurement=self.hass.config.currency,
             ),
             cost,
         )
         _LOGGER.debug(
-            "Stored %s hourly readings from %s to %s",
+            "Stored %s hours of %s from %s to %s",
             len(reads),
+            meter.name,
             reads[0].start,
             reads[-1].start,
         )
-        return reads[-1].start
 
     async def _async_fetch(self, first: date, last: date) -> list[HourlyRead]:
         data = self.config_entry.data
@@ -208,7 +289,9 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
             if row.get("state") is not None
         ]
 
-    async def _async_sums_before(self, start: datetime) -> tuple[float, float]:
+    async def _async_sums_before(
+        self, start: datetime, meter: _Meter
+    ) -> tuple[float, float]:
         """Return the running sums stored for the newest hour before start."""
         # The hour before start is normally stored. When it is not, look through
         # everything older for the newest hour that is.
@@ -218,14 +301,14 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
                 self.hass,
                 window_start,
                 start,
-                {CONSUMPTION_STATISTIC_ID, COST_STATISTIC_ID},
+                {meter.consumption_id, meter.cost_id},
                 "hour",
                 None,
                 {"sum"},
             )
             if all(
                 _older_rows(stats.get(statistic_id, []), start)
-                for statistic_id in (CONSUMPTION_STATISTIC_ID, COST_STATISTIC_ID)
+                for statistic_id in (meter.consumption_id, meter.cost_id)
             ):
                 break
 
@@ -233,7 +316,7 @@ class OakvilleHydroCoordinator(DataUpdateCoordinator[datetime | None]):
             rows = _older_rows(stats.get(statistic_id, []), start)
             return float(rows[-1]["sum"]) if rows else 0.0
 
-        return _last_sum(CONSUMPTION_STATISTIC_ID), _last_sum(COST_STATISTIC_ID)
+        return _last_sum(meter.consumption_id), _last_sum(meter.cost_id)
 
 
 def _older_rows(rows: list[Any], start: datetime) -> list[Any]:

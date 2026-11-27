@@ -1,28 +1,36 @@
 # Oakville Hydro for Home Assistant
 
-A Home Assistant custom integration that reads your hourly electricity usage from the Oakville Hydro MyAccount portal and stores it as long-term statistics, so the Energy dashboard can show it.
+A Home Assistant custom integration that reads your electricity and water usage from the Oakville Hydro MyAccount portal and stores it as long-term statistics, so the Energy dashboard can show it.
 
 This project is not affiliated with Oakville Hydro. It uses the same web API as the portal at https://myaccount.oakvillehydro.com, which is not documented and can change without notice.
 
 ## What it does
 
 - Signs in with the email and password of your MyOakvilleHydro account.
-- Reads hourly usage (kWh) and the cost the portal reports for each hour.
-- Writes two statistics:
+- Reads hourly electricity usage (kWh) and the cost the portal reports for each hour.
+- Reads water usage (m³) and its consumption charge for each billing period, when the account has a water service.
+- Writes four statistics:
   - `oakville_hydro:electricity_consumption` in kWh
   - `oakville_hydro:electricity_cost` in your Home Assistant currency
-- On first setup it imports all hourly history the portal has, starting from the date your service began.
-- After that it checks every 6 hours and reads the last 7 days again, so readings the utility corrects later replace the stored ones.
+  - `oakville_hydro:water_consumption` in m³
+  - `oakville_hydro:water_cost` in your Home Assistant currency
+- On first setup it imports all history the portal has.
+- After that it checks every 6 hours. It reads the last 7 days of electricity again, so readings the utility corrects later replace the stored ones, and it adds a water billing period when the portal shows a new one.
+
+### Water is an estimate per hour
+
+The water meter is read about once every two months, and the portal has one volume per billing period. The integration shares that volume, and its cost, equally among the hours from the start date to the end date of the period. Totals per period are exact. Values per hour, day or month are averages, and the time since the last reading stays empty until the next reading arrives.
 
 It creates no entities. The data appears only as statistics.
 
 ## Limits
 
-- The portal publishes each day's readings during the following night. The data is always about one day behind and cannot show live power.
-- The cost is the electricity line of the bill only (the Time-of-Use, Tiered or Ultra-Low Overnight price). It does not include delivery, regulatory charges, HST or the Ontario Electricity Rebate.
+- The portal publishes each day's electricity readings during the following night. The data is always about one day behind and cannot show live power.
+- The electricity cost is the electricity line of the bill only (the Time-of-Use, Tiered or Ultra-Low Overnight price). It does not include delivery, regulatory charges, HST or the Ontario Electricity Rebate.
+- The water cost is the consumption charge only. It does not include the fixed service charge.
+- A water billing period that the portal changes after it was imported is not updated.
 - Accounts that ask for a one-time code at sign-in are not supported.
-- One electricity meter per Home Assistant. If the account has several, the first one is used.
-- Water usage is not read.
+- One electricity meter and one water meter per Home Assistant. If the account has several, the first of each is used.
 
 ## Requirements
 
@@ -47,6 +55,7 @@ Home Assistant 2026.11 or newer.
 2. Enter the email and password of your MyOakvilleHydro account. Home Assistant stores them in the integration's config entry, the same way it stores other integrations' credentials.
 3. The first import runs in the background and takes one to three minutes for a year of history.
 4. Go to **Settings → Dashboards → Energy**, add a grid consumption source, and pick **Oakville Hydro electricity**. For the cost, choose "Use an entity tracking the total costs" and pick **Oakville Hydro electricity cost (commodity)**.
+5. For water, add a water source on the same page and pick **Oakville Hydro water**, with **Oakville Hydro water cost (consumption charge)** as its cost.
 
 When the portal rejects the stored password, for example after the yearly password expiry, Home Assistant asks you to sign in again.
 

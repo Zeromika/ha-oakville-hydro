@@ -9,3 +9,5 @@ CONF_SERVICE_START = "service_start"
 
 CONSUMPTION_STATISTIC_ID = f"{DOMAIN}:electricity_consumption"
 COST_STATISTIC_ID = f"{DOMAIN}:electricity_cost"
+WATER_CONSUMPTION_STATISTIC_ID = f"{DOMAIN}:water_consumption"
+WATER_COST_STATISTIC_ID = f"{DOMAIN}:water_cost"
