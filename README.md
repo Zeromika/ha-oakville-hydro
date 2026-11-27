@@ -54,6 +54,10 @@ When the portal rejects the stored password, for example after the yearly passwo
 
 Each statistic row carries a running sum. On every update the integration reads the stored sum for the hour before the first hour it is about to write and continues from it. Hours that are already stored but missing from a later portal answer keep their stored value. Running the same update twice writes the same rows.
 
+## Licence
+
+MIT. See `LICENSE`.
+
 ## Development
 
 The parsing and running-sum logic is in `custom_components/oakville_hydro/model.py` and has no Home Assistant imports. Its tests run with:
